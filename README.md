@@ -1,4 +1,4 @@
-**Download**: [Onceworld - Sky Corridor](https://github.com/Dxjleaf/onceworld-skycorridor/releases/download/v1.0/DungeonOptimizer.exe)
+**Download**: [Onceworld - Sky Corridor](https://github.com/Dxjleaf/onceworld-skycorridor/releases/download/1.0/SkyCorridor.exe)
 
 Setup
 Install and run .exe file (Windows only). No additional dependencies required.
