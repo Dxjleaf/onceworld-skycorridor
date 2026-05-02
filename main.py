@@ -2,24 +2,46 @@ import heapq
 import json
 import os
 import sys
+import ctypes
+
+# ---------- 管理员权限提升 (Windows) ----------
+def is_admin():
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
+
+def elevate_admin():
+    if not is_admin():
+        ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, " ".join(sys.argv), None, 1
+        )
+        sys.exit()
+
+# 在导入其他模块前提升权限（如果打包成 exe 会请求 UAC）
+elevate_admin()
 
 # ---------- 清屏 ----------
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
+# ---------- ANSI 颜色 ----------
 class Colors:
     GREEN = '\033[92m'
     CYAN = '\033[96m'
     YELLOW = '\033[93m'
     RED = '\033[91m'
+    BOLD = '\033[1m'
     RESET = '\033[0m'
 
 def color_text(text, color):
     return f"{color}{text}{Colors.RESET}"
 
+# ---------- 常量 ----------
 DEFAULT_TARGET = 100000
 CACHE_FILE = "dungeon_cache.json"
 
+# ---------- 缓存 ----------
 def load_cache():
     if os.path.exists(CACHE_FILE):
         try:
@@ -33,143 +55,97 @@ def save_cache(cache):
     with open(CACHE_FILE, 'w', encoding='utf-8') as f:
         json.dump(cache, f, indent=2, ensure_ascii=False)
 
-def cache_key(demon, adventurer, target):
-    return f"{demon}_{adventurer}_{target}"
+def cache_key(demon, adventurer, max_change, target):
+    return f"{demon}_{adventurer}_{max_change}_{target}"
 
-# ---------- 核心搜索（同时枚举A和B）----------
-def bfs_fixed_A(A1, A2, total_adventurer, target, best_steps=None, best_change=None):
+# ---------- 核心搜索 ----------
+def solve_core(total_demon, total_adventurer, max_change, target):
     if target % 100 != 0:
-        return None, None
-
+        return None, None, None
     init_options = []
-    if total_adventurer >= 98:
+    if 98 <= total_adventurer:
         init_options.append((98, "单边", "oneside"))
-    if total_adventurer >= 49:
+    if 49 <= total_adventurer:
         init_options.append((49, "双边", "twosides"))
-    if not init_options:
-        return None, None
+
+    hundreds = list(range(100, target+1, 100))
+    if not hundreds:
+        return None, None, None
+    B_vals = [b for b in range(0, total_adventurer+1, 100)]
+    if not B_vals:
+        B_vals = [0]
 
     best = {}
     pq = []
-    heappush = heapq.heappush
-    heappop = heapq.heappop
 
     for B0, act_zh, act_en in init_options:
-        state = (100, B0, 0)  # (layer, B, max_B_change)
-        best[state] = (1, 0, (None, act_zh, act_en, A1, B0))
-        heappush(pq, (1, 0, 100, B0, 0))
+        for B1 in B_vals:
+            if abs(B1 - B0) > max_change:
+                continue
+            state = (100, B1)
+            maxc = abs(B1 - B0)
+            totalc = maxc
+            if state not in best or (1, maxc, totalc) < (best[state][0], best[state][1], best[state][2]):
+                best[state] = (1, maxc, totalc, (None, act_zh, act_en, 0, B0))
+                heapq.heappush(pq, (1, maxc, totalc, 100, B1))
 
     while pq:
-        steps, _, cur_layer, cur_B, cur_maxB = heappop(pq)
-
-        if best_steps is not None and steps > best_steps:
+        steps, maxc, totalc, cur_layer, cur_B = heapq.heappop(pq)
+        cur_state = (cur_layer, cur_B)
+        if (steps, maxc, totalc) != best[cur_state][:3]:
             continue
-
-        if best_change is not None and cur_maxB >= best_change:
-            continue
-
         if cur_layer == target:
             path = []
-            state = (cur_layer, cur_B, cur_maxB)
+            state = cur_state
             while True:
-                _, _, (prev_state, act_zh, act_en, A_used, B_used) = best[state]
+                _, _, _, (prev_state, act_zh, act_en, A, B) = best[state]
                 if prev_state is None:
-                    path.append((1, act_zh, act_en, state[0], A_used, B_used))
+                    path.append((1, act_zh, act_en, state[0], A, B))
                     break
-                path.append((prev_state[0], act_zh, act_en, state[0], A_used, B_used))
+                path.append((prev_state[0], act_zh, act_en, state[0], A, B))
                 state = prev_state
             path.reverse()
-            return steps, path
+            return steps, path, target
 
-        use_A = A1 if steps == 1 else A2
-
-        if cur_layer == 10000 or cur_layer == 100000:
-            boss_gain = 99
-        else:
-            boss_gain = 99 + 100 * use_A
-
-        remain = target - cur_layer - boss_gain - 1
-        if remain < 0:
-            continue
-
-        max_B = min(total_adventurer, remain)
-        max_B = (max_B // 100) * 100
-
-        for B_next in range(0, max_B + 1, 100):
-            new_maxB = max(cur_maxB, abs(B_next - cur_B))
-
-            if best_change is not None and new_maxB >= best_change:
+        for A in range(total_demon + 1):
+            boss_gain = 99 + 100 * A
+            step = (1 + cur_B) + boss_gain
+            nxt_layer = cur_layer + step
+            if nxt_layer > target or nxt_layer % 100 != 0:
                 continue
+            for nxt_B in B_vals:
+                if abs(nxt_B - cur_B) > max_change:
+                    continue
+                nd = steps + 1
+                new_maxc = max(maxc, abs(nxt_B - cur_B))
+                new_totalc = totalc + abs(nxt_B - cur_B)
+                nxt_state = (nxt_layer, nxt_B)
+                if nxt_state not in best or (nd, new_maxc, new_totalc) < (best[nxt_state][0], best[nxt_state][1], best[nxt_state][2]):
+                    # 英文标识统一为 oneside+boss
+                    best[nxt_state] = (nd, new_maxc, new_totalc, (cur_state, "单边+Boss", "oneside+boss", A, cur_B))
+                    heapq.heappush(pq, (nd, new_maxc, new_totalc, nxt_layer, nxt_B))
 
-            step = (1 + B_next) + boss_gain
-            nxt = cur_layer + step
+    return None, None, None
 
-            if nxt > target or nxt % 100 != 0:
-                continue
-
-            state = (nxt, B_next, new_maxB)
-            new_steps = steps + 1
-
-            if state not in best or new_steps < best[state][0]:
-                best[state] = (
-                    new_steps,
-                    0,
-                    ((cur_layer, cur_B, cur_maxB), "单边+Boss", "oneside+boss", use_A, B_next),
-                )
-                heappush(pq, (new_steps, 0, nxt, B_next, new_maxB))
-
-    return None, None
-
-def solve(total_demon, total_adventurer, target):
-    max_A = min(total_demon, target // 100)
-
-    best_steps = None
-    best_path = None
-    best_change = float('inf')
-
-    for A1 in range(max_A, -1, -1):
-        for A2 in range(max_A, -1, -1):
-
-            steps, path = bfs_fixed_A(
-                A1, A2,
-                total_adventurer,
-                target,
-                best_steps,
-                best_change
-            )
-
-            if steps is None:
-                continue
-
-            if best_steps is not None and steps > best_steps:
-                continue
-
-            A_vals = [a for (_, _, _, _, a, _) in path]
-            B_vals = [b for (_, _, _, _, _, b) in path]
-
-            max_A_change = 0
-            if len(A_vals) > 2:
-                max_A_change = max(abs(A_vals[i+1] - A_vals[i]) for i in range(1, len(A_vals)-1))
-
-            max_B_change = max(abs(B_vals[i+1] - B_vals[i]) for i in range(len(B_vals)-1)) if len(B_vals) > 1 else 0
-
-            total_change = max(max_A_change, max_B_change)
-
-            if best_steps is None or steps < best_steps:
-                best_steps = steps
-                best_path = path
-                best_change = total_change
-
-            elif steps == best_steps and total_change < best_change:
-                best_path = path
-                best_change = total_change
-
-    return best_steps, best_path
+def solve(total_demon, total_adventurer, max_change, target):
+    key = cache_key(total_demon, total_adventurer, max_change, target)
+    cache = load_cache()
+    if key in cache:
+        data = cache[key]
+        steps = data["steps"]
+        final_layer = data["final_layer"]
+        path = [tuple(item) for item in data["path"]]
+        return steps, path, final_layer
+    steps, path, final_layer = solve_core(total_demon, total_adventurer, max_change, target)
+    if steps is not None:
+        cache[key] = {"steps": steps, "final_layer": final_layer, "path": [list(item) for item in path]}
+        save_cache(cache)
+    return steps, path, final_layer
 
 # ---------- 辅助函数 ----------
 def translate_action(act_zh, act_en, A, B, lang):
     if lang == "zh":
-        return act_zh
+        return act_zh  # "单边" / "双边" / "单边+Boss"
     elif lang == "jp":
         if act_zh == "单边":
             return "片側"
@@ -178,7 +154,7 @@ def translate_action(act_zh, act_en, A, B, lang):
         elif act_zh == "单边+Boss":
             return "片側+ボス"
         return act_zh
-    else:
+    else:  # English
         if act_en == "oneside":
             return "Oneside"
         elif act_en == "twosides":
@@ -207,73 +183,98 @@ def get_int(prompt, low=None, high=None, default=None):
 def yes_no_default_yes(prompt):
     return input(prompt).strip().lower() != 'n'
 
-def print_table(data, headers):
+def print_table(data, headers, lang):
+    """
+    手动打印对齐好的表格，支持中日文宽字符。
+    data: list of list (每行内容)
+    headers: list of str
+    lang: 未使用但保留
+    """
+    # 计算字符串的显示宽度（中文/日文全角算2，英文/数字算1）
     def display_width(s):
         s_str = str(s)
         width = 0
         for ch in s_str:
+            # 全角字符范围：基本汉字、日文假名、全角符号等
             if '\u4e00' <= ch <= '\u9fff' or '\u3040' <= ch <= '\u30ff' or '\u3000' <= ch <= '\u303f':
                 width += 2
             else:
                 width += 1
         return width
 
+    # 初始列宽基于表头
     col_widths = [display_width(h) for h in headers]
+    # 更新列宽基于数据
     for row in data:
         for i, cell in enumerate(row):
             w = display_width(cell)
             if w > col_widths[i]:
                 col_widths[i] = w
-    min_widths = [4, 8, 14, 8, 10]
+
+    # 增加最小列宽（避免太窄）
+    min_widths = [4, 8, 12, 8, 10]  # #, 起始层, 操作, 到达层, 恶魔/冒险者
     for i, minw in enumerate(min_widths):
         if col_widths[i] < minw:
             col_widths[i] = minw
+
+    # 构建分隔线
     sep = "+" + "+".join("-" * (w + 2) for w in col_widths) + "+"
     sep_double = "+" + "+".join("=" * (w + 2) for w in col_widths) + "+"
+
     def format_row(cells):
         row = "|"
         for i, cell in enumerate(cells):
             cell_str = str(cell)
+            # 计算需要填充的空格数
             padding = col_widths[i] - display_width(cell_str)
+            # 编号列(0)和到达层(3)右对齐，其他左对齐
             if i == 0 or i == 3:
                 row += " " + " " * padding + cell_str + " |"
             else:
                 row += " " + cell_str + " " * padding + " |"
         return row
+
+    # 打印表头
     print(sep)
     print(format_row(headers))
-    print(sep_double)
+    print(sep_double)  # 表头下用双线分隔
     for row in data:
         print(format_row(row))
     print(sep)
 
-def print_result(steps, path, lang, texts):
-    A_vals = [a for (_,_,_,_,a,_) in path]
-    B_vals = [b for (_,_,_,_,_,b) in path]
-    # A最大变化（忽略第一步从0到第一个A的变化）
-    if len(A_vals) > 2:
-        max_A_change = max(abs(A_vals[i+1] - A_vals[i]) for i in range(1, len(A_vals)-1))
-    else:
-        max_A_change = 0
-    # B最大变化（包含第一步）
-    max_B_change = max(abs(B_vals[i+1] - B_vals[i]) for i in range(len(B_vals)-1)) if len(B_vals)>1 else 0
+def print_result(steps, final_layer, path, lang, texts):
+    b_vals = [B for (_, _, _, _, _, B) in path]
+    max_actual = max(abs(b_vals[i+1]-b_vals[i]) for i in range(len(b_vals)-1)) if len(b_vals)>1 else 0
+
     floors = [to for (_, _, _, to, _, _) in path]
-    hundred_cnt = sum(1 for f in floors if f % 100 == 0 and f not in (10000, 100000))
-    tenk_cnt = sum(1 for f in floors if f == 10000)
-    hundredk_cnt = sum(1 for f in floors if f == 100000)
+    hundred_cnt = 0
+    tenk_cnt = 0
+    hundredk_cnt = 0
+    for f in floors:
+        if f == 100000:
+            hundredk_cnt += 1
+        elif f % 10000 == 0:
+            tenk_cnt += 1
+        elif f % 100 == 0:
+            hundred_cnt += 1
+
+    # 构建表格数据
     table_data = []
     for i, (frm, act_zh, act_en, to, A, B) in enumerate(path, 1):
         act_text = translate_action(act_zh, act_en, A, B, lang)
         table_data.append([str(i), str(frm), act_text, str(to), f"{A}/{B}"])
+
     headers = ["#", texts["step_from"], texts["action"], texts["step_to"], texts["param_label"]]
+
     print()
-    print_table(table_data, headers)
+    print_table(table_data, headers, lang)
     print()
-    print(color_text(texts["actual"].format(max_A_change, max_B_change), Colors.CYAN))
+    print(color_text(texts["actual"].format(max_actual), Colors.CYAN))
     print(color_text(texts["hint_hundred"].format(hundred_cnt), Colors.GREEN))
     print(color_text(texts["hint_tenk"].format(tenk_cnt), Colors.GREEN))
     print(color_text(texts["hint_hundredk"].format(hundredk_cnt), Colors.GREEN))
 
+# ---------- 主程序 ----------
 def main():
     clear_screen()
     print("请选择语言 / Select Language / 言語を選択してください:")
@@ -287,18 +288,21 @@ def main():
             "prompt_demon": "所持している悪魔の総数 (0~1000): ",
             "prompt_adventurer": "所持している冒険者の総数 (0~1000): ",
             "prompt_target": f"目標階層数 (デフォルト {DEFAULT_TARGET}): ",
+            "result": "✅ 最小操作回数: {}, 最終到達階層: {}",
             "step_from": "起始層",
             "step_to": "到達層",
             "action": "行動",
             "param_label": "悪魔/冒険者",
-            "actual": "実際の最大変化幅 (悪魔/冒険者): {}/{}",
+            "actual": "実際の冒険者の最大変化幅: {}",
             "continue": "続けて計算しますか？[Enter=yes, n=no]: ",
             "exit": "プログラムを終了します。",
-            "target_corrected": "注意: 目標階層数 {} は100の倍数ではないため、{} に修正しました。",
-            "solution": "✅ 最少操作回数: {}",
+            "not_found": "条件を満たす経路が見つかりませんでした",
+            "max_reached": "変化幅を {} まで増やしましたが解は見つかりませんでした。",
+            "solution_found": "変化幅 {} で解が見つかりました：",
             "hint_hundred": "百階ボス: {}",
             "hint_tenk": "万階ボス: {}",
             "hint_hundredk": "十万階ボス: {}",
+            "target_corrected": "注意: 目標階層数 {} は100の倍数ではないため、{} に修正しました。"
         }
     elif choice == "3":
         lang = "en"
@@ -306,18 +310,21 @@ def main():
             "prompt_demon": "Total number of demons (0~1000): ",
             "prompt_adventurer": "Total number of adventurers (0~1000): ",
             "prompt_target": f"Target floor (default {DEFAULT_TARGET}): ",
+            "result": "✅ Minimum steps: {}, Final floor: {}",
             "step_from": "From",
             "step_to": "To",
             "action": "Action",
             "param_label": "Demon/Adv",
-            "actual": "Actual max change (demon/adventurer): {}/{}",
+            "actual": "Actual max adventurer change: {}",
             "continue": "Continue computing? [Enter=yes, n=no]: ",
             "exit": "Program terminated.",
-            "target_corrected": "Note: Target floor {} is not a multiple of 100, adjusted to {}.",
-            "solution": "✅ Minimum steps: {}",
+            "not_found": "No valid path found.",
+            "max_reached": "Increased change limit up to {}, no solution found.",
+            "solution_found": "Solution found with change limit {}:",
             "hint_hundred": "Hundred boss: {}",
             "hint_tenk": "Ten-thousand boss: {}",
             "hint_hundredk": "Hundred-thousand boss: {}",
+            "target_corrected": "Note: Target floor {} is not a multiple of 100, adjusted to {}."
         }
     else:
         lang = "zh"
@@ -325,18 +332,21 @@ def main():
             "prompt_demon": "您拥有的恶魔总数 (0~1000): ",
             "prompt_adventurer": "您拥有的冒险者总数 (0~1000): ",
             "prompt_target": f"目标层数 (回车默认 {DEFAULT_TARGET}): ",
+            "result": "✅ 最少操作次数: {}, 最终到达层数: {}",
             "step_from": "起始层",
             "step_to": "到达层",
             "action": "操作",
             "param_label": "恶魔/冒险者",
-            "actual": "实际最大变化幅度 (恶魔/冒险者): {}/{}",
+            "actual": "实际冒险者最大变化幅度: {}",
             "continue": "是否继续计算？[Enter=yes, n=no]: ",
             "exit": "程序结束。",
-            "target_corrected": "注意: 目标层数 {} 不是100的倍数，已自动修正为 {}。",
-            "solution": "✅ 最少操作次数: {}",
+            "not_found": "未找到符合条件的路径",
+            "max_reached": "变化幅度已增加到 {}，仍未找到解。",
+            "solution_found": "使用变化幅度 {} 找到解：",
             "hint_hundred": "百层boss: {}",
             "hint_tenk": "万层boss: {}",
             "hint_hundredk": "十万层boss: {}",
+            "target_corrected": "注意: 目标层数 {} 不是100的倍数，已自动修正为 {}。"
         }
 
     while True:
@@ -348,12 +358,18 @@ def main():
         if target % 100 != 0:
             target = target - (target % 100)
             print(color_text(texts["target_corrected"].format(original_target, target), Colors.YELLOW))
-        steps, path = solve(total_demon, total_adventurer, target)
-        if steps is not None:
-            print(color_text(f"\n{texts['solution'].format(steps)}", Colors.GREEN))
-            print_result(steps, path, lang, texts)
-        else:
-            print(color_text("未找到可行路径，请增加恶魔或冒险者总数。", Colors.RED))
+
+        found = False
+        for max_change in range(0, total_adventurer + 1):
+            steps, path, final_layer = solve(total_demon, total_adventurer, max_change, target)
+            if steps is not None:
+                print(color_text(f"\n{texts['solution_found'].format(max_change)}", Colors.GREEN))
+                print_result(steps, final_layer, path, lang, texts)
+                found = True
+                break
+        if not found:
+            print(color_text(texts["max_reached"].format(total_adventurer), Colors.RED))
+
         if not yes_no_default_yes(texts["continue"]):
             print(texts["exit"])
             break
