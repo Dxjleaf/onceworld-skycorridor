@@ -1,3 +1,5 @@
+**Download**: [file](https://github.com/Dxjleaf/onceworld-skycorridor/releases/download/v1.0/DungeonOptimizer.exe)
+
 Setup
 Install and run .exe file (Windows only). No additional dependencies required.
 
